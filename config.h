@@ -17,9 +17,6 @@ int borderpx = 2;
 static char shell[] = "/bin/sh";
 static char *utmp = NULL;
 
-/* identification sequence returned in DA and DECID */
-static char vtiden[] = "\033[?6c";
-
 /* Kerning / character bounding-box multipliers */
 float cwscale = 1.0;
 float chscale = 1.0;

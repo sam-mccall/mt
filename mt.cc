@@ -220,6 +220,10 @@ size_t mshortcutslen = LEN(mshortcuts);
 size_t shortcutslen = LEN(shortcuts);
 size_t selmaskslen = LEN(selmasks);
 
+// Identification sequence returned in DA and DECID.
+// We claim to be a VT102, feature detection is via terminfo in practice.
+static char vt102_identify[] = "\033[?6c";
+
 ssize_t xwrite(int fd, const char *s, size_t len) {
   size_t aux = len;
 
@@ -1411,7 +1415,7 @@ void csihandle(void) {
     break;
   case 'c': /* DA -- Device Attributes */
     if (csiescseq.arg[0] == 0)
-      ttywrite(vtiden, sizeof(vtiden) - 1);
+      ttywrite(vt102_identify, strlen(vt102_identify));
     break;
   case 'C': /* CUF -- Cursor <n> Forward */
   case 'a': /* HPR -- Cursor <n> Forward */
@@ -1923,7 +1927,7 @@ void tcontrolcode(uchar ascii) {
   case 0x99: /* TODO: SGCI */
     break;
   case 0x9a: /* DECID -- Identify Terminal */
-    ttywrite(vtiden, sizeof(vtiden) - 1);
+    ttywrite(vt102_identify, strlen(vt102_identify));
     break;
   case 0x9b: /* TODO: CSI */
   case 0x9c: /* TODO: ST */
@@ -1993,7 +1997,7 @@ bool eschandle(uchar ascii) {
     }
     break;
   case 'Z': /* DECID -- Identify Terminal */
-    ttywrite(vtiden, sizeof(vtiden) - 1);
+    ttywrite(vt102_identify, strlen(vt102_identify));
     break;
   case 'c': /* RIS -- Reset to inital state */
     treset();
