@@ -9,13 +9,12 @@ int borderpx = 2;
 /*
  * What program is execed by st depends of these precedence rules:
  * 1: program passed with -e
- * 2: utmp option
+ * 2: shell option
  * 3: SHELL environment variable
  * 4: value of shell in /etc/passwd
- * 5: value of shell in config.h
+ * 5: /bin/sh
  */
-static char shell[] = "/bin/sh";
-static char *utmp = NULL;
+static const char *shell = NULL;
 
 /* Kerning / character bounding-box multipliers */
 float cwscale = 1.0;
