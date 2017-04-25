@@ -177,9 +177,9 @@ void getbuttoninfo(XEvent *e) {
   selnormalize();
 
   sel.type = SEL_REGULAR;
-  for (selection_type type = SEL_REGULAR; type < selmaskslen; ++type) {
+  for (int type = 1; type < selmaskslen; ++type) {
     if (match(selmasks[type], state)) {
-      sel.type = type;
+      sel.type = static_cast<selection_type>(type);
       break;
     }
   }
@@ -890,7 +890,7 @@ void xinit(void) {
 int xmakeglyphfontspecs(XftGlyphFontSpec *specs, const MTGlyph *glyphs, int len,
                         int x, int y) {
   float winx = borderpx + x * win.cw, winy = borderpx + y * win.ch;
-  glyph_attribute prevmode = static_cast<glyph_attribute>(UINT_MAX);
+  ushort prevmode = USHRT_MAX;
   MTFont *font = &dc.font;
   FRCFlags frcflags = FRC_NORMAL;
   float runewidth = win.cw;
@@ -899,7 +899,7 @@ int xmakeglyphfontspecs(XftGlyphFontSpec *specs, const MTGlyph *glyphs, int len,
   for (int i = 0, xp = winx, yp = winy + font->ascent; i < len; ++i) {
     /* Fetch rune and mode for current glyph. */
     Rune rune = glyphs[i].u;
-    enum glyph_attribute mode = glyphs[i].mode;
+    ushort mode = glyphs[i].mode;
 
     /* Skip dummy wide-character spacing. */
     if (mode == ATTR_WDUMMY)
@@ -1169,8 +1169,9 @@ void xdrawcursor(void) {
   xdrawglyph(og, oldx, oldy);
 
   MTGlyph g = {term.line[term.c.y][term.c.x].u,
-               term.line[term.c.y][term.c.x].mode &
-                   (ATTR_BOLD | ATTR_ITALIC | ATTR_UNDERLINE | ATTR_STRUCK),
+               static_cast<ushort>(
+                   term.line[term.c.y][term.c.x].mode &
+                   (ATTR_BOLD | ATTR_ITALIC | ATTR_UNDERLINE | ATTR_STRUCK)),
                defaultbg, defaultcs};
   /*
    * Select the right color for the right mode.

@@ -62,6 +62,23 @@ char *argv0;
 
 enum cursor_movement { CURSOR_SAVE, CURSOR_LOAD };
 
+enum cursor_state {
+  CURSOR_DEFAULT = 0,
+  CURSOR_WRAPNEXT = 1,
+  CURSOR_ORIGIN = 2
+};
+
+enum escape_state {
+  ESC_START = 1,
+  ESC_CSI = 2,
+  ESC_STR = 4, /* OSC, PM, APC */
+  ESC_ALTCHARSET = 8,
+  ESC_STR_END = 16, /* a final string was encountered */
+  ESC_TEST = 32,    /* Enter in test mode */
+  ESC_UTF8 = 64,
+  ESC_DCS = 128,
+};
+
 /* CSI Escape sequence structs */
 /* ESC '[' [[ [<priv>] <arg> [;]] <mode> [<mode>]] */
 typedef struct {
@@ -1115,7 +1132,7 @@ void tdeleteline(int n) {
 
 int32_t tdefcolor(int *attr, int *npar, int l) {
   switch (attr[*npar + 1]) {
-  case 2: /* direct color in RGB space */
+  case 2: { /* direct color in RGB space */
     if (*npar + 4 >= l) {
       fprintf(stderr, "erresc(38): Incorrect number of parameters (%d)\n",
               *npar);
@@ -1130,6 +1147,7 @@ int32_t tdefcolor(int *attr, int *npar, int l) {
     else
       return TRUECOLOR(r, g, b);
     break;
+          }
   case 5: /* indexed color */
     if (*npar + 2 >= l) {
       fprintf(stderr, "erresc(38): Incorrect number of parameters (%d)\n",
@@ -1265,7 +1283,7 @@ void tsetmode(bool priv, bool set, int *args, int narg) {
         MODBIT(term.mode, set, MODE_APPCURSOR);
         break;
       case 5: { /* DECSCNM -- Reverse video */
-        enum term_mode mode = term.mode;
+        int mode = term.mode;
         MODBIT(term.mode, set, MODE_REVERSE);
         if (mode != term.mode)
           redraw();
@@ -2208,8 +2226,8 @@ void tresize(int col, int row) {
   /* resize to new height */
   term.line = xrealloc<Line>(term.line, row * sizeof(Line));
   term.alt = xrealloc<Line>(term.alt, row * sizeof(Line));
-  term.dirty = xrealloc<int>(term.dirty, row);
-  term.tabs = xrealloc<int>(term.tabs, col);
+  term.dirty = xrealloc<bool>(term.dirty, row);
+  term.tabs = xrealloc<bool>(term.tabs, col);
 
   int minrow = MIN(row, term.row);
   int mincol = MIN(col, term.col);
