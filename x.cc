@@ -1,5 +1,15 @@
 #include "x.h"
 
+#include <algorithm>
+
+#include <cerrno>
+#include <clocale>
+#include <cmath>
+#include <csignal>
+#include <cstdint>
+#include <ctime>
+
+extern "C" {
 #include <X11/XKBlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xft/Xft.h>
@@ -7,15 +17,10 @@
 #include <X11/Xutil.h>
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
-#include <errno.h>
 #include <libgen.h>
-#include <locale.h>
-#include <math.h>
-#include <signal.h>
-#include <stdint.h>
 #include <sys/select.h>
-#include <time.h>
 #include <unistd.h>
+}
 
 #include "arg.h"
 #include "mt.h"
@@ -78,7 +83,8 @@ typedef struct {
 static inline ushort sixd_to_16bit(int);
 static int xmakeglyphfontspecs(XftGlyphFontSpec *, const MTGlyph *, int, int,
                                int);
-static void xdrawglyphfontspecs(const XftGlyphFontSpec *, MTGlyph, int, int, int);
+static void xdrawglyphfontspecs(const XftGlyphFontSpec *, MTGlyph, int, int,
+                                int);
 static void xdrawglyph(MTGlyph, int, int);
 static void xclear(int, int, int, int);
 static void xdrawcursor(void);
@@ -105,31 +111,43 @@ static void selcopy(Time);
 static void getbuttoninfo(XEvent *);
 static void mousereport(XEvent *);
 
-static void (*handler[LASTEvent])(XEvent *) = {
-  [KeyPress] = kpress,
-  [ClientMessage] = cmessage,
-  [ConfigureNotify] = resize,
-  [VisibilityNotify] = visibility,
-  [UnmapNotify] = unmap,
-  [Expose] = expose,
-  [FocusIn] = focus,
-  [FocusOut] = focus,
-  [MotionNotify] = bmotion,
-  [ButtonPress] = bpress,
-  [ButtonRelease] = brelease,
-  /*
-   * Uncomment if you want the selection to disappear when you select something
-   * different in another window.
-   */
-  /*  [SelectionClear] = selclear_, */
-  [SelectionNotify] = selnotify,
-  /*
-   * PropertyNotify is only turned on when there is some INCR transfer happening
-   * for the selection retrieval.
-   */
-  [PropertyNotify] = propnotify,
-  [SelectionRequest] = selrequest,
-};
+void handle(XEvent *ev) {
+  switch (ev->type) {
+  case KeyPress:
+    return kpress(ev);
+  case ClientMessage:
+    return cmessage(ev);
+  case ConfigureNotify:
+    return resize(ev);
+  case VisibilityNotify:
+    return visibility(ev);
+  case UnmapNotify:
+    return unmap(ev);
+  case Expose:
+    return expose(ev);
+  case FocusIn:
+    return focus(ev);
+  case FocusOut:
+    return focus(ev);
+  case MotionNotify:
+    return bmotion(ev);
+  case ButtonPress:
+    return bpress(ev);
+  case ButtonRelease:
+    return brelease(ev);
+  // Uncomment if you want the selection to disappear when you select
+  // something different in another window.
+  //  case SelectionClear: return selclear_(ev);
+  case SelectionNotify:
+    return selnotify(ev);
+  // PropertyNotify is only turned on when there is some INCR transfer
+  // happening for the selection retrieval.
+  case PropertyNotify:
+    return propnotify(ev);
+  case SelectionRequest:
+    return selrequest(ev);
+  }
+}
 
 /* Globals */
 static DC dc;
@@ -159,7 +177,7 @@ void getbuttoninfo(XEvent *e) {
   selnormalize();
 
   sel.type = SEL_REGULAR;
-  for (int type = 1; type < selmaskslen; ++type) {
+  for (selection_type type = SEL_REGULAR; type < selmaskslen; ++type) {
     if (match(selmasks[type], state)) {
       sel.type = type;
       break;
@@ -261,7 +279,7 @@ void bpress(XEvent *e) {
     } else if (TIMEDIFF(now, sel.tclick1) <= doubleclicktimeout) {
       sel.snap = SNAP_WORD;
     } else {
-      sel.snap = 0;
+      sel.snap = SNAP_NONE;
     }
     selnormalize();
 
@@ -345,9 +363,7 @@ void selnotify(XEvent *e) {
      * FIXME: Fix the computer world.
      */
     uchar *last = data + nitems * format / 8;
-    for (uchar *repl = data; (repl = memchr(repl, '\n', last - repl));
-         *repl++ = '\r') {
-    }
+    std::replace(data, last, '\n', '\r');
 
     if (IS_SET(MODE_BRCKTPASTE) && ofs == 0)
       ttywrite("\033[200~", 6);
@@ -499,7 +515,8 @@ void xresize(int col, int row) {
 ushort sixd_to_16bit(int x) { return x == 0 ? 0 : 0x3737 + 0x2828 * x; }
 
 bool xloadcolor(int i, const char *name, Color *ncolor) {
-  XRenderColor color = {.alpha = 0xffff};
+  XRenderColor color = {};
+  color.alpha = 0xffff;
 
   if (!name) {
     if (BETWEEN(i, 16, 255)) {  /* 256 color */
@@ -523,7 +540,9 @@ void xloadcols(void) {
   static bool loaded;
 
   dc.collen = MAX(colornamelen, 256);
-  dc.col = xmalloc(dc.collen * sizeof(Color));
+  dc.col = static_cast<Color *>(malloc(dc.collen * sizeof(Color)));
+  if (!dc.col)
+    die("Out of memory\n");
 
   if (loaded) {
     for (Color *cp = dc.col; cp < &dc.col[dc.collen]; ++cp)
@@ -583,10 +602,12 @@ void xhints(void) {
     sizeh->win_gravity = xgeommasktogravity(xw.gm);
   }
 
-  XWMHints wm = {.flags = InputHint, .input = 1};
-  XClassHint class = {opt_name ? opt_name : termname,
+  XWMHints wm = {};
+  wm.flags = InputHint;
+  wm.input = 1;
+  XClassHint xclass = {opt_name ? opt_name : termname,
                       opt_class ? opt_class : termname};
-  XSetWMProperties(xw.dpy, xw.win, NULL, NULL, NULL, 0, sizeh, &wm, &class);
+  XSetWMProperties(xw.dpy, xw.win, NULL, NULL, NULL, 0, sizeh, &wm, &xclass);
   XFree(sizeh);
 }
 
@@ -673,7 +694,7 @@ bool xloadfont(MTFont *f, FcPattern *pattern) {
   return true;
 }
 
-void xloadfonts(char *fontstr, double fontsize) {
+void xloadfonts(const char *fontstr, double fontsize) {
   double fontval;
   FcPattern *pattern;
   if (fontstr[0] == '-') {
@@ -869,7 +890,7 @@ void xinit(void) {
 int xmakeglyphfontspecs(XftGlyphFontSpec *specs, const MTGlyph *glyphs, int len,
                         int x, int y) {
   float winx = borderpx + x * win.cw, winy = borderpx + y * win.ch;
-  enum glyph_attribute prevmode = UINT_MAX;
+  glyph_attribute prevmode = static_cast<glyph_attribute>(UINT_MAX);
   MTFont *font = &dc.font;
   FRCFlags frcflags = FRC_NORMAL;
   float runewidth = win.cw;
@@ -1220,9 +1241,11 @@ void xsetenv(void) {
   setenv("WINDOWID", buf, 1);
 }
 
-void xsettitle(char *p) {
+void xsettitle(const char *p) {
   XTextProperty prop;
-  Xutf8TextListToTextProperty(xw.dpy, &p, 1, XUTF8StringStyle, &prop);
+  // This function only reads p, but doesn't declare it const...
+  Xutf8TextListToTextProperty(xw.dpy, const_cast<char **>(&p), 1,
+                              XUTF8StringStyle, &prop);
   XSetWMName(xw.dpy, xw.win, &prop);
   XSetTextProperty(xw.dpy, xw.win, &prop, xw.netwmname);
   XFree(prop.value);
@@ -1253,12 +1276,12 @@ void drawregion(int x1, int y1, int x2, int y2) {
 
     int i = 0, ox = 0;
     for (int x = x1; x < x2 && i < numspecs; x++) {
-      MTGlyph new = term.line[y][x];
-      if (new.mode == ATTR_WDUMMY)
+      MTGlyph changed = term.line[y][x];
+      if (changed.mode == ATTR_WDUMMY)
         continue;
       if (ena_sel && selected(x, y))
-        new.mode ^= ATTR_REVERSE;
-      if (i > 0 && ATTRCMP(base, new)) {
+        changed.mode ^= ATTR_REVERSE;
+      if (i > 0 && ATTRCMP(base, changed)) {
         xdrawglyphfontspecs(specs, base, i, ox, y);
         specs += i;
         numspecs -= i;
@@ -1266,7 +1289,7 @@ void drawregion(int x1, int y1, int x2, int y2) {
       }
       if (i == 0) {
         ox = x;
-        base = new;
+        base = changed;
       }
       i++;
     }
@@ -1338,7 +1361,7 @@ void kpress(XEvent *ev) {
   }
 
   /* 2. custom keys from config.h */
-  char *customkey = kmap(ksym, e->state);
+  const char *customkey = kmap(ksym, e->state);
   if (customkey) {
     ttysend(customkey, strlen(customkey));
     return;
@@ -1466,8 +1489,7 @@ void run(void) {
         XNextEvent(xw.dpy, &ev);
         if (XFilterEvent(&ev, None))
           continue;
-        if (handler[ev.type])
-          (handler[ev.type])(&ev);
+        handle(&ev);
       }
 
       draw();

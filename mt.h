@@ -1,12 +1,13 @@
 #ifndef MT_MT_H
 #define MT_MT_H
 
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <time.h>
+#include <cstddef>
+#include <cstdint>
+#include <ctime>
 
+extern "C" {
 #include <X11/Xft/Xft.h>
+}
 
 /* Arbitrary sizes */
 #define UTF_SIZ 4
@@ -163,7 +164,7 @@ typedef struct {
 typedef struct {
   uint b;
   uint mask;
-  char *s;
+  const char *s;
 } MouseShortcut;
 
 typedef struct {
@@ -189,12 +190,17 @@ typedef struct {
   // Atom xtarget;
 } Selection;
 
-typedef union {
+union Arg {
+  Arg(int val) { i = val; }
+  Arg(uint val) { i = val; }
+  Arg(float val) { f = val; }
+  Arg(const void *val) { v = val; }
+
   int i;
   uint ui;
   float f;
   const void *v;
-} Arg;
+};
 
 typedef struct {
   uint mod;
@@ -214,12 +220,12 @@ bool match(uint, uint);
 void ttynew(void);
 size_t ttyread(void);
 void ttyresize(void);
-void ttysend(char *, size_t);
+void ttysend(const char *, size_t);
 void ttywrite(const char *, size_t);
 
 void resettitle(void);
 
-char *kmap(KeySym, uint);
+const char *kmap(KeySym, uint);
 void cresize(int, int);
 void selclear(void);
 
@@ -230,10 +236,9 @@ char *getsel(void);
 int x2col(int);
 int y2row(int);
 
-size_t utf8decode(char *, Rune *, size_t);
+size_t utf8decode(const char *, Rune *, size_t);
 size_t utf8encode(Rune, char *);
 
-void *xmalloc(size_t);
 char *xstrdup(char *);
 
 void usage(void);
