@@ -1,5 +1,7 @@
 #include "mt.h"
 
+#include <algorithm>
+
 #include <cctype>
 #include <cerrno>
 #include <climits>
@@ -81,24 +83,115 @@ enum escape_state {
 
 /* CSI Escape sequence structs */
 /* ESC '[' [[ [<priv>] <arg> [;]] <mode> [<mode>]] */
-typedef struct {
-  char buf[ESC_BUF_SIZ]; /* raw string */
-  int len;               /* raw string length */
+struct CSIEscape {
+  bool append(char c) {
+    buf_.push_back(c);
+    return BETWEEN(c, 0x40, 0x7E) || buf_.size() >= ESC_BUF_SIZ;
+  }
+
+  void dump() const {
+    fprintf(stderr, "ESC[");
+    for (char s : buf_) {
+      uint c = s & 0xff;
+      if (isprint(c)) {
+        putc(c, stderr);
+      } else if (c == '\n') {
+        fprintf(stderr, "(\\n)");
+      } else if (c == '\r') {
+        fprintf(stderr, "(\\r)");
+      } else if (c == 0x1b) {
+        fprintf(stderr, "(\\e)");
+      } else {
+        fprintf(stderr, "(%02x)", c);
+      }
+    }
+    putc('\n', stderr);
+  }
+
+  void parse(void) {
+    priv = buf_[0] == '?';
+    int pos = priv;
+    args.clear();
+    for (;pos < buf_.size(); pos++) {
+      char *np = nullptr;
+      long int v = strtol(&buf_[pos], &np, 10);
+      pos = np - buf_.data();
+      args.push_back((v == LONG_MAX || v == LONG_MIN) ? -1 : v);
+      if (buf_[pos] != ';')
+        break;
+    }
+    strncpy(mode, &buf_[pos], 2);
+  }
+
+  void reset() { buf_.clear(); }
+
+  int arg(int index, int default_value) const {
+    return (index < args.size()) ? args[index] : default_value;
+  }
+
+  std::vector<int> args;
   bool priv;
-  int arg[ESC_ARG_SIZ];
-  int narg; /* nb of args */
   char mode[2];
-} CSIEscape;
+
+ private:
+  std::string buf_;
+};
 
 /* STR Escape sequence structs */
 /* ESC type [[ [<priv>] <arg> [;]] <mode>] ESC '\' */
-typedef struct {
+struct STREscape {
+  void append(const std::string& str) {
+    if (buf_.size() + str.size() > ESC_BUF_SIZ)
+      return;
+    buf_.append(str);
+  }
+
+  // TODO: this is used to detect entering MODE_SIXEL. But there can be params!
+  bool empty() const { return buf_.empty(); }
+
+  void dump() const {
+    fprintf(stderr, "ESC%c", type);
+    for (char s : buf_) {
+      uint c = s & 0xff;
+      if (c == '\0') {
+        putc('\n', stderr);
+        return;
+      } else if (isprint(c)) {
+        putc(c, stderr);
+      } else if (c == '\n') {
+        fprintf(stderr, "(\\n)");
+      } else if (c == '\r') {
+        fprintf(stderr, "(\\r)");
+      } else if (c == 0x1b) {
+        fprintf(stderr, "(\\e)");
+      } else {
+        fprintf(stderr, "(%02x)", c);
+      }
+    }
+    fprintf(stderr, "ESC\\\n");
+  }
+
+  void parse() {
+    args.clear();
+    std::replace(buf_.begin(), buf_.end(), ';', '\0');
+    for (int i = 0; i < buf_.size(); i++) {
+      if (buf_[i] != '\0' && (i == 0 || buf_[i-1] == '\0'))
+        args.push_back(&buf_[i]);
+    }
+  }
+
+  void reset(char c) { type = c; buf_.clear(); args.clear(); }
+
+  const char* arg(int index, const char* default_value) {
+    return (index < args.size()) ? args[index] : default_value;
+  }
+
   char type;             /* ESC type ... */
-  char buf[STR_BUF_SIZ]; /* raw string */
-  int len;               /* raw string length */
-  char *args[STR_ARG_SIZ];
-  int narg; /* nb of args */
-} STREscape;
+  std::vector<const char*> args;
+
+ private:
+  std::string buf_;
+};
 
 typedef struct {
   KeySym k;
@@ -130,15 +223,9 @@ static void sendbreak(const Arg *);
 static void execsh(void);
 static void sigchld(int);
 
-static void csidump(void);
 static void csihandle(void);
-static void csiparse(void);
-static void csireset(void);
 static bool eschandle(uchar);
-static void strdump(void);
 static void strhandle(void);
-static void strparse(void);
-static void strreset(void);
 
 static void tprinter(const std::string&);
 static void tdumpline(int);
@@ -159,17 +246,17 @@ static void treset(void);
 static void tresize(int, int);
 static void tscrollup(int, int);
 static void tscrolldown(int, int);
-static void tsetattr(int *, int);
+static void tsetattr(const std::vector<int>&);
 static void tsetchar(Rune, MTGlyph *, int, int);
 static void tsetscroll(int, int);
 static void tswapscreen(void);
-static void tsetmode(bool, bool, int *, int);
+static void tsetmode(bool, bool, const std::vector<int>&);
 static void tfulldirt(void);
 static void techo(Rune);
 static void tcontrolcode(uchar);
 static void tdectest(char);
 static void tdefutf8(char);
-static int32_t tdefcolor(int *, int *, int);
+static int32_t tdefcolor(const std::vector<int>&, int*);
 static void tdeftran(char);
 static void tstrsequence(uchar);
 
@@ -932,32 +1019,6 @@ void tnewline(bool first_col) {
   tmoveto(first_col ? 0 : term.c.x, y);
 }
 
-void csiparse(void) {
-  csiescseq.narg = 0;
-  char *p = csiescseq.buf;
-  if (*p == '?') {
-    csiescseq.priv = true;
-    p++;
-  }
-
-  csiescseq.buf[csiescseq.len] = '\0';
-  while (p < csiescseq.buf + csiescseq.len) {
-    char *np = NULL;
-    long int v = strtol(p, &np, 10);
-    if (np == p)
-      v = 0;
-    if (v == LONG_MAX || v == LONG_MIN)
-      v = -1;
-    csiescseq.arg[csiescseq.narg++] = v;
-    p = np;
-    if (*p != ';' || csiescseq.narg == ESC_ARG_SIZ)
-      break;
-    p++;
-  }
-  csiescseq.mode[0] = *p++;
-  csiescseq.mode[1] = (p < csiescseq.buf + csiescseq.len) ? *p : '\0';
-}
-
 /* for absolute user moves, when decom is set */
 void tmoveato(int x, int y) {
   tmoveto(x, y + ((term.c.state & CURSOR_ORIGIN) ? term.top : 0));
@@ -1064,10 +1125,13 @@ void tdeleteline(int n) {
     tscrollup(term.c.y, n);
 }
 
-int32_t tdefcolor(int *attr, int *npar, int l) {
+// Returns a color index, and sets *npar to the last used attr index.
+static int32_t tdefcolor(const std::vector<int>& attr, int *npar) {
+  if (*npar + 1 >= attr.size())
+    return -1;
   switch (attr[*npar + 1]) {
   case 2: { /* direct color in RGB space */
-    if (*npar + 4 >= l) {
+    if (*npar + 4 >= attr.size()) {
       fprintf(stderr, "erresc(38): Incorrect number of parameters (%d)\n",
               *npar);
       break;
@@ -1083,7 +1147,7 @@ int32_t tdefcolor(int *attr, int *npar, int l) {
     break;
           }
   case 5: /* indexed color */
-    if (*npar + 2 >= l) {
+    if (*npar + 2 >= attr.size()) {
       fprintf(stderr, "erresc(38): Incorrect number of parameters (%d)\n",
               *npar);
       break;
@@ -1104,8 +1168,8 @@ int32_t tdefcolor(int *attr, int *npar, int l) {
   return -1;
 }
 
-void tsetattr(int *attr, int l) {
-  for (int i = 0; i < l; i++) {
+void tsetattr(const std::vector<int>& attr) {
+  for (int i = 0; i < attr.size(); ++i) {
     switch (attr[i]) {
     case 0:
       term.c.attr.mode &=
@@ -1162,7 +1226,7 @@ void tsetattr(int *attr, int l) {
       term.c.attr.mode &= ~ATTR_STRUCK;
       break;
     case 38: {
-      int32_t idx = tdefcolor(attr, &i, l);
+      int32_t idx = tdefcolor(attr, &i);
       if (idx >= 0)
         term.c.attr.fg = idx;
       break;
@@ -1171,7 +1235,7 @@ void tsetattr(int *attr, int l) {
       term.c.attr.fg = defaultfg;
       break;
     case 48: {
-      int32_t idx = tdefcolor(attr, &i, l);
+      int32_t idx = tdefcolor(attr, &i);
       if (idx >= 0)
         term.c.attr.bg = idx;
       break;
@@ -1189,8 +1253,8 @@ void tsetattr(int *attr, int l) {
       } else if (BETWEEN(attr[i], 100, 107)) {
         term.c.attr.bg = attr[i] - 100 + 8;
       } else {
-        fprintf(stderr, "erresc(default): gfx attr %d unknown\n", attr[i]),
-            csidump();
+        fprintf(stderr, "erresc(default): gfx attr %d unknown\n", attr[i]);
+        csiescseq.dump();
       }
       break;
     }
@@ -1209,10 +1273,10 @@ void tsetscroll(int t, int b) {
   term.bot = b;
 }
 
-void tsetmode(bool priv, bool set, int *args, int narg) {
-  for (int *lim = args + narg; args < lim; ++args) {
+void tsetmode(bool priv, bool set, const std::vector<int>& args) {
+  for (int arg : args) {
     if (priv) {
-      switch (*args) {
+      switch (arg) {
       case 1: /* DECCKM -- Cursor key */
         MODBIT(term.mode, set, MODE_APPCURSOR);
         break;
@@ -1287,7 +1351,7 @@ void tsetmode(bool priv, bool set, int *args, int narg) {
         }
         if (set ^ alt)
           tswapscreen();
-        if (*args != 1049)
+        if (arg != 1049)
           break;
       }
       /* FALLTHROUGH */
@@ -1307,11 +1371,11 @@ void tsetmode(bool priv, bool set, int *args, int narg) {
                     and can be mistaken for other control
                     codes. */
       default:
-        fprintf(stderr, "erresc: unknown private set/reset mode %d\n", *args);
+        fprintf(stderr, "erresc: unknown private set/reset mode %d\n", arg);
         break;
       }
     } else {
-      switch (*args) {
+      switch (arg) {
       case 0: /* Error (IGNORED) */
         break;
       case 2: /* KAM -- keyboard action */
@@ -1327,7 +1391,7 @@ void tsetmode(bool priv, bool set, int *args, int narg) {
         MODBIT(term.mode, set, MODE_CRLF);
         break;
       default:
-        fprintf(stderr, "erresc: unknown set/reset mode %d\n", *args);
+        fprintf(stderr, "erresc: unknown set/reset mode %d\n", arg);
         break;
       }
     }
@@ -1339,24 +1403,20 @@ void csihandle(void) {
   default:
   unknown:
     fprintf(stderr, "erresc: unknown csi ");
-    csidump();
-    /* die(""); */
+    csiescseq.dump();
     break;
   case '@': /* ICH -- Insert <n> blank char */
-    DEFAULT(csiescseq.arg[0], 1);
-    tinsertblank(csiescseq.arg[0]);
+    tinsertblank(csiescseq.arg(0, 1));
     break;
   case 'A': /* CUU -- Cursor <n> Up */
-    DEFAULT(csiescseq.arg[0], 1);
-    tmoveto(term.c.x, term.c.y - csiescseq.arg[0]);
+    tmoveto(term.c.x, term.c.y - csiescseq.arg(0, 1));
     break;
   case 'B': /* CUD -- Cursor <n> Down */
   case 'e': /* VPR --Cursor <n> Down */
-    DEFAULT(csiescseq.arg[0], 1);
-    tmoveto(term.c.x, term.c.y + csiescseq.arg[0]);
+    tmoveto(term.c.x, term.c.y + csiescseq.arg(0, 1));
     break;
   case 'i': /* MC -- Media Copy */
-    switch (csiescseq.arg[0]) {
+    switch (csiescseq.arg(0, 0)) {
     case 0:
       tdump();
       break;
@@ -1375,28 +1435,24 @@ void csihandle(void) {
     }
     break;
   case 'c': /* DA -- Device Attributes */
-    if (csiescseq.arg[0] == 0)
+    if (csiescseq.arg(0, 0) == 0)
       ttywrite(vt102_identify, strlen(vt102_identify));
     break;
   case 'C': /* CUF -- Cursor <n> Forward */
   case 'a': /* HPR -- Cursor <n> Forward */
-    DEFAULT(csiescseq.arg[0], 1);
-    tmoveto(term.c.x + csiescseq.arg[0], term.c.y);
+    tmoveto(term.c.x + csiescseq.arg(0, 1), term.c.y);
     break;
   case 'D': /* CUB -- Cursor <n> Backward */
-    DEFAULT(csiescseq.arg[0], 1);
-    tmoveto(term.c.x - csiescseq.arg[0], term.c.y);
+    tmoveto(term.c.x - csiescseq.arg(0, 1), term.c.y);
     break;
   case 'E': /* CNL -- Cursor <n> Down and first col */
-    DEFAULT(csiescseq.arg[0], 1);
-    tmoveto(0, term.c.y + csiescseq.arg[0]);
+    tmoveto(0, term.c.y + csiescseq.arg(0, 1));
     break;
   case 'F': /* CPL -- Cursor <n> Up and first col */
-    DEFAULT(csiescseq.arg[0], 1);
-    tmoveto(0, term.c.y - csiescseq.arg[0]);
+    tmoveto(0, term.c.y - csiescseq.arg(0, 1));
     break;
   case 'g': /* TBC -- Tabulation clear */
-    switch (csiescseq.arg[0]) {
+    switch (csiescseq.arg(0, 0)) {
     case 0: /* clear current tab stop */
       term.tabs[term.c.x] = false;
       break;
@@ -1409,22 +1465,18 @@ void csihandle(void) {
     break;
   case 'G': /* CHA -- Move to <col> */
   case '`': /* HPA */
-    DEFAULT(csiescseq.arg[0], 1);
-    tmoveto(csiescseq.arg[0] - 1, term.c.y);
+    tmoveto(csiescseq.arg(0, 1) - 1, term.c.y);
     break;
   case 'H': /* CUP -- Move to <row> <col> */
   case 'f': /* HVP */
-    DEFAULT(csiescseq.arg[0], 1);
-    DEFAULT(csiescseq.arg[1], 1);
-    tmoveato(csiescseq.arg[1] - 1, csiescseq.arg[0] - 1);
+    tmoveato(csiescseq.arg(1, 1) - 1, csiescseq.arg(0, 1) - 1);
     break;
   case 'I': /* CHT -- Cursor Forward Tabulation <n> tab stops */
-    DEFAULT(csiescseq.arg[0], 1);
-    tputtab(csiescseq.arg[0]);
+    tputtab(csiescseq.arg(0, 1));
     break;
   case 'J': /* ED -- Clear screen */
     selclear();
-    switch (csiescseq.arg[0]) {
+    switch (csiescseq.arg(0, 0)) {
     case 0: /* below */
       tclearregion(term.c.x, term.c.y, term.col - 1, term.c.y);
       if (term.c.y < term.row - 1) {
@@ -1444,7 +1496,7 @@ void csihandle(void) {
     }
     break;
   case 'K': /* EL -- Clear line */
-    switch (csiescseq.arg[0]) {
+    switch (csiescseq.arg(0, 0)) {
     case 0: /* right */
       tclearregion(term.c.x, term.c.y, term.col - 1, term.c.y);
       break;
@@ -1457,48 +1509,40 @@ void csihandle(void) {
     }
     break;
   case 'S': /* SU -- Scroll <n> line up */
-    DEFAULT(csiescseq.arg[0], 1);
-    tscrollup(term.top, csiescseq.arg[0]);
+    tscrollup(term.top, csiescseq.arg(0, 1));
     break;
   case 'T': /* SD -- Scroll <n> line down */
-    DEFAULT(csiescseq.arg[0], 1);
-    tscrolldown(term.top, csiescseq.arg[0]);
+    tscrolldown(term.top, csiescseq.arg(0, 1));
     break;
   case 'L': /* IL -- Insert <n> blank lines */
-    DEFAULT(csiescseq.arg[0], 1);
-    tinsertblankline(csiescseq.arg[0]);
+    tinsertblankline(csiescseq.arg(0, 1));
     break;
   case 'l': /* RM -- Reset Mode */
-    tsetmode(csiescseq.priv, false, csiescseq.arg, csiescseq.narg);
+    tsetmode(csiescseq.priv, false, csiescseq.args);
     break;
   case 'M': /* DL -- Delete <n> lines */
-    DEFAULT(csiescseq.arg[0], 1);
-    tdeleteline(csiescseq.arg[0]);
+    tdeleteline(csiescseq.arg(0, 1));
     break;
   case 'X': /* ECH -- Erase <n> char */
-    DEFAULT(csiescseq.arg[0], 1);
-    tclearregion(term.c.x, term.c.y, term.c.x + csiescseq.arg[0] - 1, term.c.y);
+    tclearregion(term.c.x, term.c.y, term.c.x + csiescseq.arg(0, 1) - 1, term.c.y);
     break;
   case 'P': /* DCH -- Delete <n> char */
-    DEFAULT(csiescseq.arg[0], 1);
-    tdeletechar(csiescseq.arg[0]);
+    tdeletechar(csiescseq.arg(0, 1));
     break;
   case 'Z': /* CBT -- Cursor Backward Tabulation <n> tab stops */
-    DEFAULT(csiescseq.arg[0], 1);
-    tputtab(-csiescseq.arg[0]);
+    tputtab(-csiescseq.arg(0, 1));
     break;
   case 'd': /* VPA -- Move to <row> */
-    DEFAULT(csiescseq.arg[0], 1);
-    tmoveato(term.c.x, csiescseq.arg[0] - 1);
+    tmoveato(term.c.x, csiescseq.arg(0, 1) - 1);
     break;
   case 'h': /* SM -- Set terminal mode */
-    tsetmode(csiescseq.priv, true, csiescseq.arg, csiescseq.narg);
+    tsetmode(csiescseq.priv, true, csiescseq.args);
     break;
   case 'm': /* SGR -- Terminal attribute (color) */
-    tsetattr(csiescseq.arg, csiescseq.narg);
+    tsetattr(csiescseq.args);
     break;
   case 'n': /* DSR – Device Status Report (cursor position) */
-    if (csiescseq.arg[0] == 6) {
+    if (csiescseq.arg(0, 0) == 6) {
       char buf[40];
       int len =
           snprintf(buf, sizeof(buf), "\033[%i;%iR", term.c.y + 1, term.c.x + 1);
@@ -1509,9 +1553,7 @@ void csihandle(void) {
     if (csiescseq.priv) {
       goto unknown;
     } else {
-      DEFAULT(csiescseq.arg[0], 1);
-      DEFAULT(csiescseq.arg[1], term.row);
-      tsetscroll(csiescseq.arg[0] - 1, csiescseq.arg[1] - 1);
+      tsetscroll(csiescseq.arg(0, 1) - 1, csiescseq.arg(1, term.row) - 1);
       tmoveato(0, 0);
     }
     break;
@@ -1524,11 +1566,10 @@ void csihandle(void) {
   case ' ':
     switch (csiescseq.mode[1]) {
     case 'q': /* DECSCUSR -- Set Cursor Style */
-      DEFAULT(csiescseq.arg[0], 1);
-      if (!BETWEEN(csiescseq.arg[0], 0, 6)) {
+      if (!BETWEEN(csiescseq.arg(0, 1), 0, 6)) {
         goto unknown;
       }
-      win.cursor = csiescseq.arg[0];
+      win.cursor = csiescseq.arg(0, 1);
       break;
     default:
       goto unknown;
@@ -1537,57 +1578,33 @@ void csihandle(void) {
   }
 }
 
-void csidump(void) {
-  fprintf(stderr, "ESC[");
-  for (int i = 0; i < csiescseq.len; i++) {
-    uint c = csiescseq.buf[i] & 0xff;
-    if (isprint(c)) {
-      putc(c, stderr);
-    } else if (c == '\n') {
-      fprintf(stderr, "(\\n)");
-    } else if (c == '\r') {
-      fprintf(stderr, "(\\r)");
-    } else if (c == 0x1b) {
-      fprintf(stderr, "(\\e)");
-    } else {
-      fprintf(stderr, "(%02x)", c);
-    }
-  }
-  putc('\n', stderr);
-}
-
-void csireset(void) { memset(&csiescseq, 0, sizeof(csiescseq)); }
-
 void strhandle(void) {
   term.esc &= ~(ESC_STR_END | ESC_STR);
-  strparse();
-  int narg = strescseq.narg;
-  int par = narg ? atoi(strescseq.args[0]) : 0;
+  strescseq.parse();
 
-  char *p = NULL;
+  const char *p = nullptr;
   switch (strescseq.type) {
   case ']': /* OSC -- Operating System Command */
-    switch (par) {
+    switch (atoi(strescseq.arg(0, ""))) {
     case 0:
     case 1:
     case 2:
-      if (narg > 1)
+      if (strescseq.args.size() > 1)
         xsettitle(strescseq.args[1]);
       return;
     case 52:
-      if (narg > 2) {
+      if (strescseq.args.size() > 2) {
         xsetsel(base64dec(strescseq.args[2]), CurrentTime);
         clipcopy(NULL);
       }
       return;
     case 4: /* color set */
-      if (narg < 3)
+      if (strescseq.args.size() < 3)
         break;
       p = strescseq.args[2];
     /* FALLTHROUGH */
     case 104: { /* color reset, here p = NULL */
-      int j = (narg > 1) ? atoi(strescseq.args[1]) : -1;
-      if (!xsetcolorname(j, p)) {
+      if (!xsetcolorname(atoi(strescseq.arg(1, "-1")), p)) {
         fprintf(stderr, "erresc: invalid color %s\n", p);
       } else {
         /*
@@ -1601,7 +1618,7 @@ void strhandle(void) {
     break;
     }
   case 'k': /* old title set compatibility */
-    xsettitle(strescseq.args[0]);
+    xsettitle(strescseq.arg(0, ""));
     return;
   case 'P': /* DCS -- Device Control String */
     term.esc |= ESC_DCS;
@@ -1611,50 +1628,8 @@ void strhandle(void) {
   }
 
   fprintf(stderr, "erresc: unknown str ");
-  strdump();
+  strescseq.dump();
 }
-
-void strparse(void) {
-  strescseq.narg = 0;
-  strescseq.buf[strescseq.len] = '\0';
-
-  char *p = strescseq.buf;
-  if (*p == '\0')
-    return;
-
-  while (strescseq.narg < STR_ARG_SIZ) {
-    strescseq.args[strescseq.narg++] = p;
-    while (*p != ';' && *p != '\0')
-      ++p;
-    if (*p == '\0')
-      return;
-    *p++ = '\0';
-  }
-}
-
-void strdump(void) {
-  fprintf(stderr, "ESC%c", strescseq.type);
-  for (int i = 0; i < strescseq.len; i++) {
-    uint c = strescseq.buf[i] & 0xff;
-    if (c == '\0') {
-      putc('\n', stderr);
-      return;
-    } else if (isprint(c)) {
-      putc(c, stderr);
-    } else if (c == '\n') {
-      fprintf(stderr, "(\\n)");
-    } else if (c == '\r') {
-      fprintf(stderr, "(\\r)");
-    } else if (c == 0x1b) {
-      fprintf(stderr, "(\\e)");
-    } else {
-      fprintf(stderr, "(%02x)", c);
-    }
-  }
-  fprintf(stderr, "ESC\\\n");
-}
-
-void strreset(void) { memset(&strescseq, 0, sizeof(strescseq)); }
 
 void sendbreak(const Arg *arg) {
   if (tcsendbreak(cmdfd, 0))
@@ -1773,8 +1748,6 @@ void tdectest(char c) {
 }
 
 void tstrsequence(uchar c) {
-  strreset();
-
   switch (c) {
   case 0x90: /* DCS -- Device Control String */
     c = 'P';
@@ -1790,7 +1763,7 @@ void tstrsequence(uchar c) {
     c = ']';
     break;
   }
-  strescseq.type = c;
+  strescseq.reset(c);
   term.esc |= ESC_STR;
 }
 
@@ -1823,7 +1796,7 @@ void tcontrolcode(uchar ascii) {
     }
     break;
   case '\033': /* ESC */
-    csireset();
+    csiescseq.reset();
     term.esc &= ~(ESC_CSI | ESC_ALTCHARSET | ESC_TEST);
     term.esc |= ESC_START;
     return;
@@ -1834,7 +1807,7 @@ void tcontrolcode(uchar ascii) {
   case '\032': /* SUB */
     tsetchar('?', &term.c.attr, term.c.x, term.c.y);
   case '\030': /* CAN */
-    csireset();
+    csiescseq.reset();
     break;
   case '\005': /* ENQ (IGNORED) */
   case '\000': /* NUL (IGNORED) */
@@ -2016,28 +1989,10 @@ void tputc(Rune u) {
       /* TODO: implement sixel mode */
       return;
     }
-    if (term.esc & ESC_DCS && strescseq.len == 0 && u == 'q')
+    if (term.esc & ESC_DCS && strescseq.empty() && u == 'q')
       term.mode |= MODE_SIXEL;
 
-    if (strescseq.len + c.size() >= sizeof(strescseq.buf) - 1) {
-      /*
-       * Here is a bug in terminals. If the user never sends
-       * some code to stop the str or esc command, then st
-       * will stop responding. But this is better than
-       * silently failing with unknown characters. At least
-       * then users will report back.
-       *
-       * In the case users ever get fixed, here is the code:
-       */
-      /*
-       * term.esc = 0;
-       * strhandle();
-       */
-      return;
-    }
-
-    memmove(&strescseq.buf[strescseq.len], c.data(), c.size());
-    strescseq.len += c.size();
+    strescseq.append(c);
     return;
   }
 
@@ -2055,11 +2010,9 @@ check_control_code:
     return;
   } else if (term.esc & ESC_START) {
     if (term.esc & ESC_CSI) {
-      csiescseq.buf[csiescseq.len++] = u;
-      if (BETWEEN(u, 0x40, 0x7E) ||
-          csiescseq.len >= sizeof(csiescseq.buf) - 1) {
+      if (csiescseq.append(u)) {
         term.esc = 0;
-        csiparse();
+        csiescseq.parse();
         csihandle();
       }
       return;
