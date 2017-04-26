@@ -155,10 +155,6 @@ Shortcut shortcuts[] = {
   { (ControlMask | ShiftMask),  XK_I,           iso14755,       0 },
 };
 
-// Keys outside the X11 function key range (0xFD00 - 0xFFFF) with shortcuts.
-// By default, shortcuts in `key` are only scanned for KeySyms in this range.
-static KeySym mappedkeys[] = {0 /* avoid zero-length array */};
-
 // Modifiers to ignore when matching keyboard and mouse events.
 // By default, numlock and keyboard layout are ignored.
 static uint ignoremod = Mod2Mask | XK_SWITCH_MOD;

@@ -2167,22 +2167,18 @@ bool match(uint mask, uint state) {
 
 void numlock(const Arg *dummy) { term.numlock = !term.numlock; }
 
+static bool keysymless(const Key &left, const Key &right) {
+  return left.k < right.k;
+}
+
+void kmapinit() {
+  std::stable_sort(std::begin(key), std::end(key), keysymless);
+}
+
 const char *kmap(KeySym k, uint state) {
-  /* Check for mapped keys out of X11 function keys. */
-  int i;
-  for (i = 0; i < LEN(mappedkeys); i++) {
-    if (mappedkeys[i] == k)
-      break;
-  }
-  if (i == LEN(mappedkeys)) {
-    if ((k & 0xFFFF) < 0xFD00)
-      return NULL;
-  }
-
-  for (Key *kp = key; kp < key + LEN(key); kp++) {
-    if (kp->k != k)
-      continue;
-
+  auto range = std::equal_range(std::begin(key), std::end(key),
+                                Key{k, 0, nullptr, 0, 0, 0}, keysymless);
+  for (Key *kp = range.first; kp < range.second; ++kp) {
     if (!match(kp->mask, state))
       continue;
 
