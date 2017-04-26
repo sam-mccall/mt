@@ -1,6 +1,9 @@
 #ifndef MT_MT_H
 #define MT_MT_H
 
+#include <vector>
+#include <string>
+
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
@@ -95,7 +98,7 @@ typedef struct {
   uint32_t bg; /* background  */
 } MTGlyph;
 
-typedef MTGlyph *Line;
+using Line = std::vector<MTGlyph>;
 
 typedef struct {
   MTGlyph attr; /* current char attributes */
@@ -118,10 +121,10 @@ enum charset {
 typedef struct {
   int row;                /* nb row */
   int col;                /* nb col */
-  Line *line;             /* screen */
-  Line *alt;              /* alternate screen */
-  bool *dirty;            /* dirtyness of lines */
-  XftGlyphFontSpec *specbuf; /* font spec buffer used for rendering */
+  std::vector<Line> line; /* screen */
+  std::vector<Line> alt;  /* alternate screen */
+  std::vector<bool> dirty;/* dirtyness of lines */
+  std::vector<XftGlyphFontSpec> specbuf; // font spec buffer used for rendering
   TCursor c;              /* cursor */
   int top;                /* top    scroll limit */
   int bot;                /* bottom scroll limit */
@@ -131,7 +134,7 @@ typedef struct {
   int charset;            /* current charset */
   int icharset;           /* selected charset for sequence */
   bool numlock;           /* lock numbers in keyboard */
-  bool *tabs;
+  std::vector<bool> tabs;
 } Term;
 
 /* Purely graphic info */
@@ -165,7 +168,7 @@ typedef struct {
     int x, y;
   } nb, ne, ob, oe;
 
-  char *primary, *clipboard;
+  std::string primary, clipboard;
   bool alt;
   struct timespec tclick1;
   struct timespec tclick2;
@@ -215,14 +218,12 @@ void selclear(void);
 void selinit(void);
 void selnormalize(void);
 bool selected(int, int);
-char *getsel(void);
+std::string getsel(void);
 int x2col(int);
 int y2row(int);
 
 size_t utf8decode(const char *, Rune *, size_t);
 size_t utf8encode(Rune, char *);
-
-char *xstrdup(char *);
 
 void usage(void);
 

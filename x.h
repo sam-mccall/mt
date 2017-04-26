@@ -1,6 +1,8 @@
 #ifndef MT_X_H
 #define MT_X_H
 
+#include <string>
+
 extern "C" {
 #include <X11/Xlib.h>
 }
@@ -30,6 +32,6 @@ void xunloadfonts(void);
 void xresize(int, int);
 void xselpaste(void);
 unsigned long xwinid(void);
-void xsetsel(char *, Time);
+void xsetsel(std::string, Time);
 
 #endif

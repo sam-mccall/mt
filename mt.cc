@@ -140,8 +140,7 @@ static void strhandle(void);
 static void strparse(void);
 static void strreset(void);
 
-static void tprinter(const char *, size_t);
-static void tdumpsel(void);
+static void tprinter(const std::string&);
 static void tdumpline(int);
 static void tdump(void);
 static void tclearregion(int, int, int, int);
@@ -182,7 +181,7 @@ static char utf8encodebyte(Rune, size_t);
 static char *utf8strchr(char *s, Rune u);
 static size_t utf8validate(Rune *, size_t);
 
-static char *base64dec(const char *);
+static std::string base64dec(const char *);
 
 static ssize_t xwrite(int, const char *, size_t);
 
@@ -238,29 +237,6 @@ ssize_t xwrite(int fd, const char *s, size_t len) {
   return aux;
 }
 
-template <typename T> T *xmalloc(size_t len) {
-  void *p = malloc(len * sizeof(T));
-
-  if (!p)
-    die("Out of memory\n");
-
-  return static_cast<T *>(p);
-}
-
-template <typename T> T *xrealloc(void *p, size_t len) {
-  if ((p = realloc(p, len * sizeof(T))) == NULL)
-    die("Out of memory\n");
-
-  return static_cast<T *>(p);
-}
-
-char *xstrdup(char *s) {
-  if ((s = strdup(s)) == NULL)
-    die("Out of memory\n");
-
-  return s;
-}
-
 size_t utf8decode(const char *c, Rune *u, size_t clen) {
   *u = UTF_INVALID;
   if (!clen)
@@ -305,6 +281,20 @@ size_t utf8encode(Rune u, char *c) {
   return len;
 }
 
+void utf8encode(Rune u, std::string *s) {
+  size_t len = utf8validate(&u, 0);
+  if (len > UTF_SIZ)
+    return;
+  size_t pos = s->size();
+  s->resize(pos + len);
+
+  for (size_t i = len - 1; i != 0; --i) {
+    (*s)[pos + i] = utf8encodebyte(u, 0);
+    u >>= 6;
+  }
+  (*s)[pos] = utf8encodebyte(u, len);
+}
+
 char utf8encodebyte(Rune u, size_t i) { return utfbyte[i] | (u & ~utfmask[i]); }
 
 char *utf8strchr(char *s, Rune u) {
@@ -345,28 +335,28 @@ static const char base64_digits[] = {
     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
     0,  0,  0,  0,  0,  0,  0,  0};
 
-char *base64dec(const char *src) {
+std::string base64dec(const char *src) {
+  std::string result;
+
   size_t in_len = strlen(src);
   if (in_len % 4)
-    return NULL;
+    return result;
 
-  char *dst = xmalloc<char>(in_len / 4 * 3 + 1);
-  char *result = dst;
+  result.reserve(in_len / 4 * 3);
   while (*src) {
     int a = base64_digits[(unsigned char)*src++];
     int b = base64_digits[(unsigned char)*src++];
     int c = base64_digits[(unsigned char)*src++];
     int d = base64_digits[(unsigned char)*src++];
 
-    *dst++ = (a << 2) | ((b & 0x30) >> 4);
+    result.push_back((a << 2) | ((b & 0x30) >> 4));
     if (c == -1)
       break;
-    *dst++ = ((b & 0x0f) << 4) | ((c & 0x3c) >> 2);
+    result.push_back(((b & 0x0f) << 4) | ((c & 0x3c) >> 2));
     if (d == -1)
       break;
-    *dst++ = ((c & 0x03) << 6) | d;
+    result.push_back(((c & 0x03) << 6) | d);
   }
-  *dst = '\0';
   return result;
 }
 
@@ -376,8 +366,6 @@ void selinit(void) {
   sel.mode = SEL_IDLE;
   sel.snap = SNAP_NONE;
   sel.ob.x = -1;
-  sel.primary = NULL;
-  sel.clipboard = NULL;
 }
 
 int x2col(int x) {
@@ -510,19 +498,19 @@ void selsnap(int *x, int *y, int direction) {
   }
 }
 
-char *getsel(void) {
-  if (sel.ob.x == -1)
-    return NULL;
+std::string getsel(void) {
+  std::string str;
 
-  int bufsize = (term.col + 1) * (sel.ne.y - sel.nb.y + 1) * UTF_SIZ;
-  char *str = xmalloc<char>(bufsize);
-  char *ptr = str;
+  if (sel.ob.x == -1)
+    return str;
+
+  str.reserve((term.col + 1) * (sel.ne.y - sel.nb.y + 1)); // estimate
 
   /* append every set & selected glyph to the selection */
   for (int y = sel.nb.y; y <= sel.ne.y; y++) {
     int linelen = tlinelen(y);
     if (linelen == 0) {
-      *ptr++ = '\n';
+      str.push_back('\n');
       continue;
     }
 
@@ -543,7 +531,7 @@ char *getsel(void) {
       if (gp->mode & ATTR_WDUMMY)
         continue;
 
-      ptr += utf8encode(gp->u, ptr);
+      utf8encode(gp->u, &str);
     }
 
     /*
@@ -556,9 +544,8 @@ char *getsel(void) {
      * FIXME: Fix the computer world.
      */
     if ((y < sel.ne.y || lastx >= linelen) && !(last->mode & ATTR_WRAP))
-      *ptr++ = '\n';
+      str.push_back('\n');
   }
-  *ptr = 0;
   return str;
 }
 
@@ -611,7 +598,7 @@ void execsh(void) {
   // The program to execute is the shell unless explicitly specified.
   const char *prog = opt_cmd ? opt_cmd[0] : sh;
   const char *prog_only[] = {prog, NULL};
-  const char *const *args = (opt_cmd) ? opt_cmd : prog_only;
+  const auto *args = (opt_cmd) ? opt_cmd : prog_only;
 
   unsetenv("COLUMNS");
   unsetenv("LINES");
@@ -859,10 +846,10 @@ void treset(void) {
                    /* x */ 0,
                    /* y */ 0, CURSOR_DEFAULT};
 
-  memset(term.tabs, 0, term.col * sizeof(*term.tabs));
+  term.tabs.assign(false, term.col);
   // Inital tabstops every 8 columns, matching 'it#' in terminfo.
   for (uint i = 8; i < term.col; i += 8)
-    term.tabs[i] = 1;
+    term.tabs[i] = true;
   term.top = 0;
   term.bot = term.row - 1;
   term.mode = MODE_WRAP | MODE_UTF8;
@@ -887,25 +874,20 @@ void tnew(int col, int row) {
 }
 
 void tswapscreen(void) {
-  Line *tmp = term.line;
-
-  term.line = term.alt;
-  term.alt = tmp;
+  std::swap(term.line, term.alt);
   term.mode ^= MODE_ALTSCREEN;
   tfulldirt();
 }
 
 void tscrolldown(int orig, int n) {
   LIMIT(n, 0, term.bot - orig + 1);
+  if (!n) return;
 
   tsetdirt(orig, term.bot - n);
   tclearregion(0, term.bot - n + 1, term.col - 1, term.bot);
 
-  Line temp;
   for (int i = term.bot; i >= orig + n; i--) {
-    temp = term.line[i];
-    term.line[i] = term.line[i - n];
-    term.line[i - n] = temp;
+    std::swap(term.line[i], term.line[i - n]);
   }
 
   selscroll(orig, n);
@@ -913,15 +895,13 @@ void tscrolldown(int orig, int n) {
 
 void tscrollup(int orig, int n) {
   LIMIT(n, 0, term.bot - orig + 1);
+  if (!n) return;
 
   tclearregion(0, orig, term.col - 1, orig + n - 1);
   tsetdirt(orig + n, term.bot);
 
-  Line temp;
   for (int i = orig; i <= term.bot - n; i++) {
-    temp = term.line[i];
-    term.line[i] = term.line[i + n];
-    term.line[i + n] = temp;
+    std::swap(term.line[i], term.line[i + n]);
   }
 
   selscroll(orig, -n);
@@ -1074,26 +1054,18 @@ void tclearregion(int x1, int y1, int x2, int y2) {
 
 void tdeletechar(int n) {
   LIMIT(n, 0, term.col - term.c.x);
-
-  int dst = term.c.x;
-  int src = term.c.x + n;
-  int size = term.col - src;
-  MTGlyph *line = term.line[term.c.y];
-
-  memmove(&line[dst], &line[src], size * sizeof(MTGlyph));
+  if (!n) return;
+  auto &line = term.line[term.c.y];
+  std::copy(&line[term.c.x + n], &line[term.col], &line[term.c.x]);
   tclearregion(term.col - n, term.c.y, term.col - 1, term.c.y);
 }
 
 void tinsertblank(int n) {
   LIMIT(n, 0, term.col - term.c.x);
-
-  int dst = term.c.x + n;
-  int src = term.c.x;
-  int size = term.col - dst;
-  MTGlyph *line = term.line[term.c.y];
-
-  memmove(&line[dst], &line[src], size * sizeof(MTGlyph));
-  tclearregion(src, term.c.y, dst - 1, term.c.y);
+  if (!n) return;
+  auto &line = term.line[term.c.y];
+  std::copy_backward(&line[term.c.x], &line[term.col - n], &line[term.col]);
+  tclearregion(term.c.x, term.c.y, term.c.x + n - 1, term.c.y);
 }
 
 void tinsertblankline(int n) {
@@ -1406,7 +1378,7 @@ void csihandle(void) {
       tdumpline(term.c.y);
       break;
     case 2:
-      tdumpsel();
+      tprinter(getsel());
       break;
     case 4:
       term.mode &= ~MODE_PRINT;
@@ -1443,7 +1415,7 @@ void csihandle(void) {
       term.tabs[term.c.x] = false;
       break;
     case 3: /* clear all the tabs */
-      memset(term.tabs, 0, term.col * sizeof(*term.tabs));
+      term.tabs.assign(false, term.col);
       break;
     default:
       goto unknown;
@@ -1618,15 +1590,8 @@ void strhandle(void) {
       return;
     case 52:
       if (narg > 2) {
-        char *dec;
-
-        dec = base64dec(strescseq.args[2]);
-        if (dec) {
-          xsetsel(dec, CurrentTime);
-          clipcopy(NULL);
-        } else {
-          fprintf(stderr, "erresc: invalid base64\n");
-        }
+        xsetsel(base64dec(strescseq.args[2]), CurrentTime);
+        clipcopy(NULL);
       }
       return;
     case 4: /* color set */
@@ -1710,8 +1675,8 @@ void sendbreak(const Arg *arg) {
     perror("Error sending break");
 }
 
-void tprinter(const char *s, size_t len) {
-  if (iofd != -1 && xwrite(iofd, s, len) < 0) {
+void tprinter(const std::string& str) {
+  if (iofd != -1 && xwrite(iofd, str.data(), str.size()) < 0) {
     fprintf(stderr, "Error writing in %s:%s\n", opt_io, strerror(errno));
     close(iofd);
     iofd = -1;
@@ -1744,25 +1709,18 @@ void toggleprinter(const Arg *arg) { term.mode ^= MODE_PRINT; }
 
 void printscreen(const Arg *arg) { tdump(); }
 
-void printsel(const Arg *arg) { tdumpsel(); }
-
-void tdumpsel(void) {
-  char *ptr = getsel();
-  if (ptr) {
-    tprinter(ptr, strlen(ptr));
-    free(ptr);
-  }
-}
+void printsel(const Arg *arg) { tprinter(getsel()); }
 
 void tdumpline(int n) {
-  MTGlyph *bp = &term.line[n][0];
-  MTGlyph *end = &bp[MIN(tlinelen(n), term.col) - 1];
-  if (bp != end || bp->u != ' ') {
-    char buf[UTF_SIZ];
-    for (; bp <= end; ++bp)
-      tprinter(buf, utf8encode(bp->u, buf));
+  const auto& line = term.line[n];
+  int len = tlinelen(n);
+  std::string text;
+  if (line[0].u != ' ' || len > 1) {
+    for (int i = 0; i < len; i++)
+      utf8encode(line[i].u, &text);
   }
-  tprinter("\n", 1);
+  text.push_back('\n');
+  tprinter(text);
 }
 
 void tdump(void) {
@@ -2032,22 +1990,22 @@ bool eschandle(uchar ascii) {
 }
 
 void tputc(Rune u) {
-  char c[UTF_SIZ];
+  std::string c;
   bool control = ISCONTROL(u);
-  int width, len;
+  int width;
   if (!IS_SET(MODE_UTF8) && !IS_SET(MODE_SIXEL)) {
-    c[0] = u;
-    width = len = 1;
+    c.push_back(u);
+    width = 1;
   } else {
-    len = utf8encode(u, c);
+    utf8encode(u, &c);
     if (!control && (width = wcwidth(u)) == -1) {
-      memcpy(c, "\357\277\275", 4); /* UTF_INVALID */
+      c = "\357\277\275"; /* UTF_INVALID */
       width = 1;
     }
   }
 
   if (IS_SET(MODE_PRINT))
-    tprinter(c, len);
+    tprinter(c);
 
   /*
    * STR sequence must be checked before anything else
@@ -2074,7 +2032,7 @@ void tputc(Rune u) {
     if (term.esc & ESC_DCS && strescseq.len == 0 && u == 'q')
       term.mode |= MODE_SIXEL;
 
-    if (strescseq.len + len >= sizeof(strescseq.buf) - 1) {
+    if (strescseq.len + c.size() >= sizeof(strescseq.buf) - 1) {
       /*
        * Here is a bug in terminals. If the user never sends
        * some code to stop the str or esc command, then st
@@ -2091,8 +2049,8 @@ void tputc(Rune u) {
       return;
     }
 
-    memmove(&strescseq.buf[strescseq.len], c, len);
-    strescseq.len += len;
+    memmove(&strescseq.buf[strescseq.len], c.data(), c.size());
+    strescseq.len += c.size();
     return;
   }
 
@@ -2139,24 +2097,22 @@ check_control_code:
   if (sel.ob.x != -1 && BETWEEN(term.c.y, sel.ob.y, sel.oe.y))
     selclear();
 
-  MTGlyph *gp = &term.line[term.c.y][term.c.x];
   if (IS_SET(MODE_WRAP) && (term.c.state & CURSOR_WRAPNEXT)) {
-    gp->mode |= ATTR_WRAP;
+    term.line[term.c.y][term.c.x].mode |= ATTR_WRAP;
     tnewline(true);
-    gp = &term.line[term.c.y][term.c.x];
   }
 
+  auto& line = term.line[term.c.y];
   if (IS_SET(MODE_INSERT) && term.c.x + width < term.col)
-    memmove(gp + width, gp, (term.col - term.c.x - width) * sizeof(MTGlyph));
+    std::copy_backward(&line[term.c.x], &line[term.col - width], &line[term.col]);
 
-  if (term.c.x + width > term.col) {
+  if (term.c.x + width > term.col)
     tnewline(true);
-    gp = &term.line[term.c.y][term.c.x];
-  }
 
   tsetchar(u, &term.c.attr, term.c.x, term.c.y);
 
   if (width == 2) {
+    MTGlyph* gp = &term.line[term.c.y][term.c.x];
     gp->mode |= ATTR_WIDE;
     if (term.c.x + 1 < term.col) {
       gp[1].u = '\0';
@@ -2176,48 +2132,26 @@ void tresize(int col, int row) {
     return;
   }
 
-  /*
-   * slide screen to keep cursor where we expect it -
-   * tscrollup would work here, but we can optimize to
-   * memmove because we're freeing the earlier lines
-   */
-  int j;
-  for (j = 0; j <= term.c.y - row; j++) {
-    free(term.line[j]);
-    free(term.alt[j]);
-  }
-  /* ensure that both src and dst are not NULL */
-  if (j > 0) {
-    memmove(term.line, term.line + j, row * sizeof(Line));
-    memmove(term.alt, term.alt + j, row * sizeof(Line));
-  }
-  for (j += row; j < term.row; j++) {
-    free(term.line[j]);
-    free(term.alt[j]);
-  }
+  /* slide screen to keep cursor on it */
+  int start = MAX(0, term.c.y - row + 1);
+  if (start > 0)
+    std::move(&term.line[start], &term.line.back(), &term.line.front());
 
   /* resize to new width */
-  term.specbuf = xrealloc<XftGlyphFontSpec>(term.specbuf, col);
+  term.specbuf.resize(col);
+  term.tabs.resize(col);
 
   /* resize to new height */
-  term.line = xrealloc<Line>(term.line, row * sizeof(Line));
-  term.alt = xrealloc<Line>(term.alt, row * sizeof(Line));
-  term.dirty = xrealloc<bool>(term.dirty, row);
-  term.tabs = xrealloc<bool>(term.tabs, col);
+  term.line.resize(row);
+  term.alt.resize(row);
+  term.dirty.resize(row);
 
-  int minrow = MIN(row, term.row);
-  int mincol = MIN(col, term.col);
   /* resize each row to new width, zero-pad if needed */
-  for (int i = 0; i < minrow; i++) {
-    term.line[i] = xrealloc<MTGlyph>(term.line[i], col);
-    term.alt[i] = xrealloc<MTGlyph>(term.alt[i], col);
-  }
+  for (auto& line : term.line)
+    line.resize(col);
+  for (auto& alt : term.alt)
+    alt.resize(col);
 
-  /* allocate any new rows */
-  for (int i = minrow; i < row; i++) {
-    term.line[i] = xmalloc<MTGlyph>(col);
-    term.alt[i] = xmalloc<MTGlyph>(col);
-  }
   // If the window was widened, tabstops may need to be added.
   if (col > term.col) {
     // Guess the width based on the first tabstop (user may have adjusted it).
@@ -2230,14 +2164,14 @@ void tresize(int col, int row) {
     }
 
     // Insert tabstops at regular intervals after the last one.
-    bool *bp = term.tabs + term.col;
-    memset(bp, 0, sizeof(*term.tabs) * (col - term.col));
-    while (--bp > term.tabs && !*bp)
-      /* nothing */;
-    for (bp += tabspaces; bp < term.tabs + col; bp += tabspaces)
-      *bp = true;
+    int tab;
+    for (tab = term.col; tab >= 0 && !term.tabs[tab]; --tab);
+    for (tab += tabspaces; tab < term.tabs.size(); tab += tabspaces)
+      term.tabs[tab] = true;
   }
   /* update terminal size */
+  int minrow = MIN(row, term.row);
+  int mincol = MIN(col, term.col);
   term.col = col;
   term.row = row;
   /* reset scrolling region */

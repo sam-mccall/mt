@@ -1,6 +1,7 @@
 #include "x.h"
 
 #include <algorithm>
+#include <vector>
 
 #include <cerrno>
 #include <clocale>
@@ -74,8 +75,7 @@ typedef struct {
 
 /* Drawing Context */
 typedef struct {
-  Color *col;
-  size_t collen;
+  std::vector<Color> col;
   MTFont font, bfont, ifont, ibfont;
   GC gc;
 } DC;
@@ -388,11 +388,8 @@ void xselpaste(void) {
 }
 
 void xclipcopy(void) {
-  if (sel.clipboard != NULL)
-    free(sel.clipboard);
-
-  if (sel.primary != NULL) {
-    sel.clipboard = xstrdup(sel.primary);
+  sel.clipboard = sel.primary;
+  if (!sel.clipboard.empty()) {
     Atom clipboard = XInternAtom(xw.dpy, "CLIPBOARD", 0);
     XSetSelectionOwner(xw.dpy, clipboard, xw.win, CurrentTime);
   }
@@ -431,19 +428,19 @@ void selrequest(XEvent *e) {
      * xith XA_STRING non ascii characters may be incorrect in the
      * requestor. It is not our problem, use utf8.
      */
-    char *seltext;
+    std::string *seltext;
     if (xsre->selection == XA_PRIMARY) {
-      seltext = sel.primary;
+      seltext = &sel.primary;
     } else if (xsre->selection == XInternAtom(xw.dpy, "CLIPBOARD", 0)) {
-      seltext = sel.clipboard;
+      seltext = &sel.clipboard;
     } else {
       fprintf(stderr, "Unhandled clipboard selection 0x%lx\n", xsre->selection);
       return;
     }
-    if (seltext != NULL) {
+    if (!seltext->empty()) {
       XChangeProperty(xsre->display, xsre->requestor, xsre->property,
-                      xsre->target, 8, PropModeReplace, (uchar *)seltext,
-                      strlen(seltext));
+                      xsre->target, 8, PropModeReplace, (uchar *)seltext->data(),
+                      seltext->size());
       xev.property = xsre->property;
     }
   }
@@ -453,9 +450,8 @@ void selrequest(XEvent *e) {
     fprintf(stderr, "Error sending SelectionNotify event\n");
 }
 
-void xsetsel(char *str, Time t) {
-  free(sel.primary);
-  sel.primary = str;
+void xsetsel(std::string str, Time t) {
+  sel.primary = std::move(str);
 
   XSetSelectionOwner(xw.dpy, XA_PRIMARY, xw.win, t);
   if (XGetSelectionOwner(xw.dpy, XA_PRIMARY) != xw.win)
@@ -539,17 +535,14 @@ bool xloadcolor(int i, const char *name, Color *ncolor) {
 void xloadcols(void) {
   static bool loaded;
 
-  dc.collen = MAX(colornamelen, 256);
-  dc.col = static_cast<Color *>(malloc(dc.collen * sizeof(Color)));
-  if (!dc.col)
-    die("Out of memory\n");
+  dc.col.resize(MAX(colornamelen, 256));
 
   if (loaded) {
-    for (Color *cp = dc.col; cp < &dc.col[dc.collen]; ++cp)
-      XftColorFree(xw.dpy, xw.vis, xw.cmap, cp);
+    for (auto& color : dc.col)
+      XftColorFree(xw.dpy, xw.vis, xw.cmap, &color);
   }
 
-  for (int i = 0; i < dc.collen; i++)
+  for (int i = 0; i < dc.col.size(); i++)
     if (!xloadcolor(i, NULL, &dc.col[i])) {
       if (colorname[i])
         die("Could not allocate color '%s'\n", colorname[i]);
@@ -560,7 +553,7 @@ void xloadcols(void) {
 }
 
 bool xsetcolorname(int x, const char *name) {
-  if (!BETWEEN(x, 0, dc.collen))
+  if (!BETWEEN(x, 0, dc.col.size()))
     return false;
 
   Color ncolor;
@@ -1276,7 +1269,7 @@ void drawregion(int x1, int y1, int x2, int y2) {
 
     term.dirty[y] = false;
 
-    XftGlyphFontSpec *specs = term.specbuf;
+    XftGlyphFontSpec *specs = term.specbuf.data();
     int numspecs =
         xmakeglyphfontspecs(specs, &term.line[y][x1], x2 - x1, x1, y);
 
@@ -1572,7 +1565,7 @@ run:
     /* eat all remaining arguments */
     opt_cmd = argv;
     if (!opt_title)
-      opt_title = basename(xstrdup(argv[0]));
+      opt_title = basename(strdup(argv[0]));
   }
   setlocale(LC_CTYPE, "");
   XSetLocaleModifiers("");
