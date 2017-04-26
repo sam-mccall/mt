@@ -1617,6 +1617,7 @@ run:
   tnew(MAX(cols, 1), MAX(rows, 1));
   xinit();
   selinit();
+  kmapinit();
   run();
 
   return 0;

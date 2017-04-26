@@ -198,6 +198,7 @@ void ttywrite(const char *, size_t);
 
 void resettitle(void);
 
+void kmapinit(void);
 const char *kmap(KeySym, uint);
 void cresize(int, int);
 void selclear(void);

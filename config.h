@@ -219,12 +219,6 @@ Shortcut shortcuts[] = {
  */
 
 /*
- * If you want keys other than the X11 function keys (0xFD00 - 0xFFFF)
- * to be mapped below, add them to this array.
- */
-static KeySym mappedkeys[] = {0 /* avoid zero-length array */};
-
-/*
  * State bits to ignore when matching key or button events.  By default,
  * numlock (Mod2Mask) and keyboard layout (XK_SWITCH_MOD) are ignored.
  */
