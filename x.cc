@@ -1347,10 +1347,10 @@ void kpress(XEvent *ev) {
     return;
 
   XKeyEvent *e = &ev->xkey;
-  char buf[32];
+  std::string buf(32, 0);
   KeySym ksym;
   Status unused_status;
-  int len = XmbLookupString(xw.xic, e, buf, sizeof buf, &ksym, &unused_status);
+  buf.resize(XmbLookupString(xw.xic, e, &buf[0], buf.size(), &ksym, &unused_status));
   /* 1. shortcuts */
   for (Shortcut *bp = shortcuts; bp < shortcuts + shortcutslen; bp++) {
     if (ksym == bp->keysym && match(bp->mod, e->state)) {
@@ -1367,21 +1367,22 @@ void kpress(XEvent *ev) {
   }
 
   /* 3. composed string from input method */
-  if (len == 0)
+  if (buf.empty())
     return;
-  if (len == 1 && e->state & Mod1Mask) {
+  if (buf.size() == 1 && e->state & Mod1Mask) {
     if (IS_SET(MODE_8BIT)) {
-      if (*buf < 0177) {
-        Rune c = *buf | 0x80;
-        len = utf8encode(c, buf);
+      if (buf[0] < 0177) {
+        Rune c = buf[0] | 0x80;
+        buf.clear();
+        utf8encode(c, &buf);
       }
     } else {
       buf[1] = buf[0];
       buf[0] = '\033';
-      len = 2;
+      buf.resize(2);
     }
   }
-  ttysend(buf, len);
+  ttysend(buf.data(), buf.size());
 }
 
 void cmessage(XEvent *e) {

@@ -267,20 +267,6 @@ Rune utf8decodebyte(char c, size_t *i) {
   return 0;
 }
 
-size_t utf8encode(Rune u, char *c) {
-  size_t len = utf8validate(&u, 0);
-  if (len > UTF_SIZ)
-    return 0;
-
-  for (size_t i = len - 1; i != 0; --i) {
-    c[i] = utf8encodebyte(u, 0);
-    u >>= 6;
-  }
-  c[0] = utf8encodebyte(u, len);
-
-  return len;
-}
-
 void utf8encode(Rune u, std::string *s) {
   size_t len = utf8validate(&u, 0);
   if (len > UTF_SIZ)
@@ -1701,8 +1687,9 @@ void iso14755(const Arg *arg) {
   if (utf32 == ULONG_MAX || (*e != '\n' && *e != '\0'))
     return;
 
-  char uc[UTF_SIZ];
-  ttysend(uc, utf8encode(utf32, uc));
+  std::string uc;
+  utf8encode(utf32, &uc);
+  ttysend(uc.data(), uc.size());
 }
 
 void toggleprinter(const Arg *arg) { term.mode ^= MODE_PRINT; }

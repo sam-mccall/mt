@@ -223,7 +223,7 @@ int x2col(int);
 int y2row(int);
 
 size_t utf8decode(const char *, Rune *, size_t);
-size_t utf8encode(Rune, char *);
+void utf8encode(Rune, std::string*);
 
 void usage(void);
 
